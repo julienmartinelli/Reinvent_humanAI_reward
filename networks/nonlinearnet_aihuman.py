@@ -51,16 +51,15 @@ class NonLinearNetDefer(nn.Module):
         return combined_output, final_output
 
 
-def optimization_loop(num_epochs, optimizer, model, X, y, h, criterion):
+def optimization_loop(num_epochs, optimizer, model, X, X_h, y, h, criterion):
 
     for epoch in range(num_epochs):
         optimizer.zero_grad()
         combined_outputs, decision_outputs = model(X)
+        combined_outputs_h, decision_outputs_h = model(X_h)
 
-        # losses for classifier 1 and classifier 2
+        # losses for clf 1 and system based on y
         loss_clf1 = criterion(combined_outputs[:, 0].unsqueeze(1), y)
-        loss_clf2 = criterion(combined_outputs[:, 1].unsqueeze(1), h)
-
         boolean = (
             (decision_outputs[:, -1] > decision_outputs[:, 0])
             * (decision_outputs[:, 1] > decision_outputs[:, 0])
@@ -70,8 +69,24 @@ def optimization_loop(num_epochs, optimizer, model, X, y, h, criterion):
             boolean * combined_outputs[:, 1] + (1 - boolean) * combined_outputs[:, 0]
         ).unsqueeze(1)
         loss_system = criterion(outputs, y)
+
+        # losses for clf 2 and system based on h
+        loss_clf2 = criterion(combined_outputs_h[:, 1].unsqueeze(1), h)
+        boolean_h = (
+            (decision_outputs_h[:, -1] > decision_outputs_h[:, 0])
+            * (decision_outputs_h[:, 1] > decision_outputs_h[:, 0])
+            * 1.0
+        )
+        # still experimental... Same criterion as loss_system above, but with h.
+        # underlying assumption being that for h close to y this is helpful.
+        outputs_h = (
+            boolean_h * combined_outputs_h[:, 1]
+            + (1 - boolean_h) * combined_outputs_h[:, 0]
+        ).unsqueeze(1)
+        loss_system_h = criterion(outputs_h, h)
+
         # combine the losses
-        total_loss = loss_clf1 + loss_clf2 + loss_system
+        total_loss = loss_clf1 + loss_clf2 + loss_system + loss_system_h
 
         total_loss.backward()
         optimizer.step()
