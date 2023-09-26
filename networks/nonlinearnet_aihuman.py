@@ -114,7 +114,7 @@ def optimization_loop(
         combined_outputs_h, decision_outputs_h = model(X_h)
 
         # losses for clf 1 and system based on y
-        loss_clf1 = criterion(combined_outputs[:, 0].unsqueeze(1), y)
+        loss_clf1 = criterion(combined_outputs[:, 0].unsqueeze(1), y) / len(X)
         # when label is 1 and human is more confident than classifier
         boolean = (y == 1).reshape(-1) * (
             decision_outputs[:, 0] > combined_outputs[:, 0]
@@ -127,10 +127,10 @@ def optimization_loop(
         outputs = (
             boolean * combined_outputs[:, 1] + (1 - boolean) * combined_outputs[:, 0]
         ).unsqueeze(1)
-        loss_system = criterion(outputs, y)
+        loss_system = criterion(outputs, y) / len(X)
 
         # losses for clf 2 and system based on h
-        loss_clf2 = criterion(combined_outputs_h[:, 1].unsqueeze(1), h)
+        loss_clf2 = criterion(combined_outputs_h[:, 1].unsqueeze(1), h) / len(X_h)
         # boolean_h = (h == 1).reshape(-1) * (
         #     decision_outputs_h[:, 0] > combined_outputs_h[:, 0]
         # ) * (combined_outputs_h[:, 1] > combined_outputs_h[:, 0]) + (h == 0).reshape(
