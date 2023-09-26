@@ -1,11 +1,9 @@
-import numpy as np
-
 import matplotlib as mpl
-from sklearn.metrics import (accuracy_score, f1_score, precision_score,
-                             recall_score)
-
+import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
+from sklearn.metrics import (accuracy_score, f1_score, precision_score,
+                             recall_score)
 
 
 def set_matplotlib_params():
@@ -42,32 +40,65 @@ def get_metrics(y, pred):
         for i, m in enumerate(["Accuracy", "Precision", "Recall", "F1-Score"])
     }
 
-def fingerprints_from_mol(mol, type = "counts", size = 2048, radius = 3):
+
+def fingerprints_from_mol(mol, type="counts", size=2048, radius=3):
     "and kwargs"
 
     if type == "binary":
         if isinstance(mol, list):
-            fps = [AllChem.GetMorganFingerprintAsBitVect(m, radius, useFeatures=True) for m in mol if m is not None]
+            fps = [
+                AllChem.GetMorganFingerprintAsBitVect(m, radius, useFeatures=True)
+                for m in mol
+                if m is not None
+            ]
             l = len(mol)
         else:
             fps = [AllChem.GetMorganFingerprintAsBitVect(mol, radius, useFeatures=True)]
             l = 1
         nfp = np.zeros((l, size), np.int32)
         for i in range(l):
-            for idx,v in enumerate(fps[i]):
+            for idx, v in enumerate(fps[i]):
                 nfp[i, idx] += int(v)
 
     if type == "counts":
         if isinstance(mol, list):
-            fps = [AllChem.GetMorganFingerprint(m, radius, useCounts=True, useFeatures=True) for m in mol if m is not None]
+            fps = [
+                AllChem.GetMorganFingerprint(
+                    m, radius, useCounts=True, useFeatures=True
+                )
+                for m in mol
+                if m is not None
+            ]
             l = len(mol)
         else:
-            fps = [AllChem.GetMorganFingerprint(mol, radius, useCounts=True, useFeatures=True)]
+            fps = [
+                AllChem.GetMorganFingerprint(
+                    mol, radius, useCounts=True, useFeatures=True
+                )
+            ]
             l = 1
         nfp = np.zeros((l, size), np.int32)
         for i in range(l):
-            for idx,v in fps[i].GetNonzeroElements().items():
-                nidx = idx%size
+            for idx, v in fps[i].GetNonzeroElements().items():
+                nidx = idx % size
                 nfp[i, nidx] += int(v)
-    
+
     return nfp
+
+
+def deferral_metrics(y_test, pred_clf, boolean, label):
+    ndefer = boolean[(y_test == label)].sum()
+    ndefersuccess = (
+        ((boolean == 1) * (y_test == label) * (pred_clf[:, 1] == y_test)).float().sum()
+    )
+    ndeferuseful = (
+        (
+            (boolean == 1)
+            * (y_test == label)
+            * (pred_clf[:, 1] == y_test)
+            * (pred_clf[:, 1] != pred_clf[:, 0])
+        )
+        .float()
+        .sum()
+    )
+    return int(ndefer), int(ndefersuccess), int(ndeferuseful)
