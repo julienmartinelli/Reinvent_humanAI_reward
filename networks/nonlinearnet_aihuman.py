@@ -114,7 +114,7 @@ def optimization_loop(
         combined_outputs_h, decision_outputs_h = model(X_h)
 
         # losses for clf 1 and system based on y
-        loss_clf1 = criterion(combined_outputs[:, 0].unsqueeze(1), y) / len(X)
+        loss_clf1 = criterion(combined_outputs[:, 0].unsqueeze(1), y)
         # when label is 1 and human is more confident than classifier
         boolean = (y == 1).reshape(-1) * (
             decision_outputs[:, 0] > combined_outputs[:, 0]
@@ -127,10 +127,10 @@ def optimization_loop(
         outputs = (
             boolean * combined_outputs[:, 1] + (1 - boolean) * combined_outputs[:, 0]
         ).unsqueeze(1)
-        loss_system = criterion(outputs, y) / len(X)
+        loss_system = criterion(outputs, y)
 
         # losses for clf 2 and system based on h
-        loss_clf2 = criterion(combined_outputs_h[:, 1].unsqueeze(1), h) / len(X_h)
+        loss_clf2 = criterion(combined_outputs_h[:, 1].unsqueeze(1), h)
         # boolean_h = (h == 1).reshape(-1) * (
         #     decision_outputs_h[:, 0] > combined_outputs_h[:, 0]
         # ) * (combined_outputs_h[:, 1] > combined_outputs_h[:, 0]) + (h == 0).reshape(
@@ -249,7 +249,7 @@ def optimize_alpha(
     active_learning=False,
 ):
 
-    best_alpha, best_f1 = 0, 0
+    best_alpha, best_f1, F1s = 0, 0, []
     for alpha in alpha_grid:
         model = NonLinearNetDefer(num_features, dropout)
         optimizer = optim.SGD(model.parameters(), lr=lr)
@@ -268,6 +268,7 @@ def optimize_alpha(
         final_pred, _, _, _, _ = test_time_prediction(model, X_val)
         f1 = f1_score(final_pred, y_val)
         print(alpha, f1)
+        F1s.append(f1)
         if f1 > best_f1:
             best_f1 = f1
             best_alpha = alpha
@@ -289,7 +290,7 @@ def optimize_alpha(
             best_alpha,
             active_learning=False,
         )
-    return best_alpha, model
+    return best_alpha, model, F1s
 
 
 def test_time_prediction(model, X_test):
@@ -297,7 +298,6 @@ def test_time_prediction(model, X_test):
     model.eval()
     combined_outputs, decision_outputs = model(X_test)
     pred_clf = (combined_outputs > 0.5).float()
-    # boolean = torch.tensor((decision_outputs[:, 0] > combined_outputs[:, 0]) * 1., dtype=torch.float32)
     boolean = (
         (decision_outputs[:, 0] > combined_outputs[:, 0])
         * (
