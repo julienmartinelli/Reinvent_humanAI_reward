@@ -1,6 +1,5 @@
 import pickle
 import numpy as np
-from helpers.utils import fingerprints_from_mol
 from tdc import Oracle
 
 
@@ -19,13 +18,16 @@ class ActivityEvaluationModel():
             return float(score)
         return 0.0
     
-    def human_score(self, smi, noise_param):
+    def human_score(self, smi, pi):
         if smi:
-            if noise_param > 0:
-                noise = np.random.normal(0, noise_param, 1).item()
+            if self.oracle_score(smi) > 0.5:
+                y = 1
             else:
-                noise = 0
-            human_score = np.clip(self.oracle_score(smi) + noise, 0, 1)
-            return human_score
+                y = 0
+            if pi == 0:
+                human_score = y
+            if pi > 0:
+                human_score = y * np.random.binomial(1, pi) + (1-y) * np.random.binomial(1, 1 - pi)
+            return int(human_score)
         else:
             return 0.0
