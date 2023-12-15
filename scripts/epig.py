@@ -1,123 +1,107 @@
 import torch
-import numpy as np
 
-from rdkit import Chem
+import logging
+import math
 
-from helpers.utils import fingerprints_from_mol
-from scripts.simulated_expert import ActivityEvaluationModel
+# functions from Freddie's code needed to compute the epig scores
+def conditional_epig_from_probs(
+    probs_pool: torch.Tensor, 
+    probs_targ: torch.Tensor
+    ) -> torch.Tensor:
+    """
+    See conditional_epig_from_logprobs.
 
-from scripts.epig import epig_from_probs
-from networks.nonlinearnet_aihuman import get_prob_distribution
+    Arguments:
+        probs_pool: Tensor[float], [N_p, K, Cl]
+        probs_targ: Tensor[float], [N_t, K, Cl]
 
+    Returns:
+        Tensor[float], [N_p, N_t]
+    """
+    # Estimate the joint predictive distribution.
+    #probs_pool = probs_pool.permute(1, 0, 2)  # [K, N_p, Cl]
+    #probs_targ = probs_targ.permute(1, 0, 2)  # [K, N_t, Cl]
+    probs_pool = probs_pool.permute(2, 0, 1)  # [K, N_p, Cl]
+    probs_targ = probs_targ.permute(2, 0, 1)  # [K, N_t, Cl]
+    probs_pool = probs_pool[:, :, None, :, None]  # [K, N_p, 1, Cl, 1]
+    probs_targ = probs_targ[:, None, :, None, :]  # [K, 1, N_t, 1, Cl]
+    probs_pool_targ_joint = probs_pool * probs_targ
+    probs_pool_targ_joint = torch.mean(probs_pool_targ_joint, dim=0)
 
-def local_idx_to_fulldata_idx(N, selected_feedback, idx):
-    all_idx = np.arange(N)
-    mask = np.ones(N, dtype=bool)
-    mask[selected_feedback] = False
-    pred_idx = all_idx[mask]
-    try:
-        pred_idx[idx]
-        return pred_idx[idx]
-    except:
-        valid_idx = [i if 0 <= i < len(pred_idx) else len(pred_idx) - 1 for i in idx]
-        return pred_idx[valid_idx]
+    # Estimate the marginal predictive distributions.
+    probs_pool = torch.mean(probs_pool, dim=0)
+    probs_targ = torch.mean(probs_targ, dim=0)
+
+    # Estimate the product of the marginal predictive distributions.
+    probs_pool_targ_indep = probs_pool * probs_targ
+
+    # Estimate the conditional expected predictive information gain for each pair of examples.
+    # This is the KL divergence between probs_pool_targ_joint and probs_pool_targ_joint_indep.
+    nonzero_joint = probs_pool_targ_joint > 0
+    log_term = torch.clone(probs_pool_targ_joint)
+    log_term[nonzero_joint] = torch.log(probs_pool_targ_joint[nonzero_joint])
+    log_term[nonzero_joint] -= torch.log(probs_pool_targ_indep[nonzero_joint])
+    scores = torch.sum(probs_pool_targ_joint * log_term, dim=(-2, -1))
+    return scores  # [N_p, N_t]
+
+def conditional_mse_from_predictions(predictions_pool: torch.Tensor, predictions_targ: torch.Tensor) -> torch.Tensor:
+    """
+    Calculate the mean squared error (MSE) between the predicted values for pairs of examples.
+    Suitable for regression models.
+
+    Arguments:
+        predictions_pool: Tensor[float], [N_p]
+        predictions_targ: Tensor[float], [N_t]
+
+    Returns:
+        Tensor[float], [N_p, N_t]
+    """
+    predictions_pool = predictions_pool.unsqueeze(1)  # [N_p, 1]
+    predictions_targ = predictions_targ.unsqueeze(0)  # [1, N_t]
+    mse = torch.mean((predictions_pool - predictions_targ) ** 2, dim=-1)  # [N_p, N_t]
+    return mse
+
+def check(
+    scores: torch.Tensor, max_value: float = math.inf, epsilon: float = 1e-6, score_type: str = ""
+) -> torch.Tensor:
+    """
+    Warn if any element of scores is negative, a nan or exceeds max_value.
+
+    We set epilson = 1e-6 based on the fact that torch.finfo(torch.float).eps ~= 1e-7.
+    """
+    if not torch.all((scores + epsilon >= 0) & (scores - epsilon <= max_value)):
+        min_score = torch.min(scores).item()
+        max_score = torch.max(scores).item()
+        
+        logging.warning(f"Invalid {score_type} score (min = {min_score}, max = {max_score})")
     
+    return scores
 
-def epig(pool, n, smiles, model, selected_feedback, is_counts = True, rng = None, t = None):
+def epig_from_conditional_scores(scores: torch.Tensor) -> torch.Tensor:
     """
-    data: pool of unlabelled molecules
-    n: number of queries to select
-    smiles: array-like object of high-scoring smiles
-    selected_feedback: previously selected in previous feedback rounds
-    is_counts: depending on whether the model was fitted on counts (or binary) molecular features
+    Arguments:
+        scores: Tensor[float], [N_p, N_t]
+
+    Returns:
+        Tensor[float], [N_p,]
     """
-    pool = pool.sample(1000)
-    N = len(pool)
-    mols_pool = [Chem.MolFromSmiles(s) for s in pool.SMILES[:1000]]
-    mols_target = [Chem.MolFromSmiles(s) for s in smiles[:1000]]
-    # calculate fps for the pool molecules
-    fps_pool = fingerprints_from_mol(mols_pool)
-    if not is_counts:
-        fps_pool = fingerprints_from_mol(mols_pool, type = 'binary')
-    # calculate fps for the target molecules
-    fps_target = fingerprints_from_mol(mols_target)
-    if not is_counts:
-        fps_target = fingerprints_from_mol(mols_target, type = 'binary')
-    probs_pool = get_prob_distribution(model, fps_pool)
-    probs_target = get_prob_distribution(model, fps_target)
-    estimated_epig_scores = epig_from_probs(probs_pool, probs_target)
-    query_idx = np.argsort(estimated_epig_scores.numpy())[::-1][:n]
-    return local_idx_to_fulldata_idx(N, selected_feedback, query_idx) 
+    scores = torch.mean(scores, dim=-1)  # [N_p,]
+    scores = check(scores, score_type="EPIG")  # [N_p,]
+    return scores  # [N_p,]
 
-def uncertainty_sampling(pool, n , smiles, model, selected_feedback, is_counts = True, rng = None, t = None):
-    N = len(pool)
-    mols = [Chem.MolFromSmiles(s) for s in smiles]
-    fps = fingerprints_from_mol(mols)
-    if not is_counts:
-        fps = fingerprints_from_mol(mols, type = 'binary')
-    pred, _ = model(torch.tensor(fps, dtype=torch.float32))
-    #pred_h = model(torch.tensor(fps, dtype=torch.float32))[:,0]
-    pred_h = pred[:,1]
-    epsilon = 1e-15  # small constant to prevent log(0)
-    entropy_scores = - (pred_h * torch.log(pred_h + epsilon))
-    query_idx = np.argsort(entropy_scores.detach().numpy())[::-1][:n] # get the n highest entropies
-    return local_idx_to_fulldata_idx(N, selected_feedback, query_idx)
+def epig_from_probs(probs_pool: torch.Tensor, probs_targ: torch.Tensor, classification: str = True) -> torch.Tensor:
+    """
+    See epig_from_logprobs.
 
-def pure_exploitation(pool, n, smiles, model, selected_feedback, is_counts = True, rng = None, t = None):
-    N = len(pool)
-    mols = [Chem.MolFromSmiles(s) for s in smiles]
-    fps = fingerprints_from_mol(mols)
-    if not is_counts:
-        fps = fingerprints_from_mol(mols, type = 'binary')
-    pred, _ = model(torch.tensor(fps, dtype=torch.float32))
-    pred_h = pred[:,1]
-    #pred_h = model(torch.tensor(fps, dtype=torch.float32))[:,0]
-    query_idx = np.argsort(pred_h.detach().numpy())[::-1][:n] # get the n highest
-    return local_idx_to_fulldata_idx(N, selected_feedback, query_idx)
+    Arguments:
+        probs_pool: Tensor[float], [N_p, K, Cl]
+        probs_targ: Tensor[float], [N_t, K, Cl]
 
-def margin_selection(pool, n, smiles, model, selected_feedback, is_counts = True, rng = None, t = None):
-    N = len(pool)
-    mols = [Chem.MolFromSmiles(s) for s in smiles]
-    fps = fingerprints_from_mol(mols)
-    if not is_counts:
-        fps = fingerprints_from_mol(mols, type = 'binary')
-    pred, _ = model(torch.tensor(fps, dtype=torch.float32))
-    pred_h = pred[:,1]
-    rev = np.sort(pred, axis=1)[:, ::-1]
-    values = rev[:, 0] - rev[:, 1]
-    query_idx = np.argsort(values)[:n]
-    return local_idx_to_fulldata_idx(N, selected_feedback, query_idx)
-
-def random_selection(pool, n, smiles, model, selected_feedback, rng, t=None):
-    N = len(pool)
-    selected = rng.choice(N-len(selected_feedback), n, replace=False)
-    return local_idx_to_fulldata_idx(N, selected_feedback, selected)
-
-def select_query(pool, n, smiles, model, selected_feedback, acquisition = 'random', rng = None, t = None):
-    '''
-    Parameters
-    ----------
-    smiles: array-like object of high-scoring smiles
-    n: number of queries to select
-    fit: fitted model at round k
-    acquisition: acquisition type
-    rng: random number generator
-
-    Returns
-    -------
-    int idx: 
-        Index of the query
-
-    '''
-    if acquisition == 'uncertainty':
-        acq = uncertainty_sampling
-    elif acquisition == 'greedy':
-        acq = pure_exploitation
-    elif acquisition == 'random':
-        acq = random_selection
-    elif acquisition == 'epig':
-        acq = epig
+    Returns:
+        Tensor[float], [N_p,]
+    """
+    if classification:
+        scores = conditional_epig_from_probs(probs_pool, probs_targ)  # [N_p, N_t]
     else:
-        print("Warning: unknown acquisition criterion. Using random sampling.")
-        acq = random_selection
-    return acq(pool, n, smiles, model, selected_feedback, rng, t)
+        scores = conditional_mse_from_predictions(probs_pool, probs_targ)
+    return epig_from_conditional_scores(scores)  # [N_p,]
