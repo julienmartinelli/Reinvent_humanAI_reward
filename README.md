@@ -19,7 +19,7 @@ To run this code, you would need the following:
 - `torch==1.7.1`
 - `gpflow==2.9.0`
 - `tensorflow==2.13.1`
-- RDKIT, pyTDC, `pandas`, `numpy`, `scikit-learn`
+- `rdkit`, `PyTDC`, `pandas`, `numpy`, `scikit-learn`
 
 Also make sure to install REINVENT from the [MAI repository](https://github.com/MolecularAI/Reinvent) and create a separate environment for REINVENT using the provided `reinvent.yml` file.
 
